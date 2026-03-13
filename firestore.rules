@@ -1,0 +1,183 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId} (matches request.auth.uid)
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required)
+    //   - displayName: string
+    //   - photoURL: string
+    //   - institution: string
+    //   - institutionType: string (school|college)
+    //   - stats: map (score, streak, maxStreak, accuracy, level, xp)
+    //   - badges: list<string>
+    //   - createdAt: timestamp
+    //   - updatedAt: timestamp
+    //
+    // Collection: quizzes
+    // Fields: id, title, description, questions, createdBy, createdAt
+    //
+    // Collection: attempts
+    // Fields: id, quizId, userId, score, correctIds, incorrectIds, timestamp
+    //
+    // Collection: contests
+    // Fields: id, title, startTime, endTime, participants
+    //
+    // Collection: institutions
+    // Fields: id, name, type, totalScore
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "rharini938@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Validators
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             (data.displayName == null || (data.displayName is string && data.displayName.size() < 100)) &&
+             (data.photoURL == null || (data.photoURL is string && data.photoURL.size() < 500)) &&
+             (data.headline == null || (data.headline is string && data.headline.size() < 200)) &&
+             (data.aboutMe == null || (data.aboutMe is string && data.aboutMe.size() < 1000)) &&
+             (data.experience == null || (data.experience is string && data.experience.size() < 500));
+    }
+
+    function isValidQuiz(data) {
+      return data.keys().hasAll(['id', 'title', 'createdBy']) &&
+             data.createdBy == request.auth.uid &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200;
+    }
+
+    function isValidAttempt(data) {
+      return data.keys().hasAll(['id', 'quizId', 'userId', 'score']) &&
+             data.userId == request.auth.uid &&
+             data.score is number;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['userId', 'title', 'message', 'type', 'read', 'timestamp']) &&
+             data.userId == request.auth.uid &&
+             data.title is string && data.title.size() < 100 &&
+             data.message is string && data.message.size() < 500 &&
+             data.type is string &&
+             data.read is bool;
+    }
+
+    function isValidErrorNote(data) {
+      return data.keys().hasAll(['userId', 'question', 'correctAnswer', 'userAnswer', 'note', 'timestamp']) &&
+             data.userId == request.auth.uid &&
+             data.question is string && data.question.size() < 1000 &&
+             data.correctAnswer is string &&
+             data.userAnswer is string &&
+             data.note is string && data.note.size() < 2000;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['text', 'senderId', 'receiverId', 'createdAt', 'read']) &&
+             data.senderId == request.auth.uid &&
+             data.text is string && data.text.size() < 5000 &&
+             data.receiverId is string &&
+             data.read is bool;
+    }
+
+    function isValidContest(data) {
+      return data.keys().hasAll(['title', 'description', 'type', 'endTime', 'participants', 'status', 'organizer', 'createdAt']) &&
+             data.title is string && data.title.size() < 200 &&
+             data.description is string && data.description.size() < 1000 &&
+             data.participants is number &&
+             data.status is string;
+    }
+
+    match /users/{userId} {
+      // Allow authenticated users to read profiles for the leaderboard
+      // Note: This exposes displayName and stats to other users.
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data);
+      allow delete: if isAdmin();
+      
+      match /savedContent/{contentId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && request.resource.data.userId == userId && request.resource.data.type in ['mindmap', 'flashcards', 'summary'] && request.resource.data.title is string && request.resource.data.title.size() < 200;
+        allow update: if isOwner(userId) && request.resource.data.userId == userId && request.resource.data.type in ['mindmap', 'flashcards', 'summary'] && request.resource.data.title is string && request.resource.data.title.size() < 200;
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    match /quizzes/{quizId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && isValidQuiz(request.resource.data);
+      allow update: if isAuthenticated() && request.resource.data.createdBy == request.auth.uid && isValidQuiz(request.resource.data);
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.createdBy == request.auth.uid);
+    }
+
+    match /attempts/{attemptId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidAttempt(request.resource.data);
+      allow update, delete: if isAdmin();
+    }
+
+    match /contests/{contestId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidContest(request.resource.data);
+      allow update, delete: if isAdmin();
+    }
+
+    match /institutions/{instId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /notifications/{notifId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && isValidNotification(request.resource.data);
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && hasOnlyAllowedFields(['read']) && request.resource.data.read is bool;
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    match /errorNotes/{noteId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && isValidErrorNote(request.resource.data);
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && isValidErrorNote(request.resource.data);
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    match /messages/{messageId} {
+      allow read: if isAuthenticated() && (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+      allow create: if isAuthenticated() && isValidMessage(request.resource.data);
+      allow update: if isAuthenticated() && resource.data.receiverId == request.auth.uid && hasOnlyAllowedFields(['read', 'text', 'senderId', 'receiverId', 'createdAt']) && request.resource.data.read == true && request.resource.data.text == resource.data.text; // Allow marking as read
+      allow delete: if isAdmin();
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

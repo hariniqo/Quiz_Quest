@@ -1,0 +1,5 @@
+{
+  "name": "Remix: QuizQuest AI",
+  "description": "An AI-powered quiz generator that creates personalized assessments from any topic or text.",
+  "requestFramePermissions": []
+}
